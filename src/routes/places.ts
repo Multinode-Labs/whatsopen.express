@@ -44,12 +44,18 @@ router.get('/places', async (req: Request, res: Response) => {
       });
     }
 
-    // Parse optional parameters
+    // Parse optional parameters with defaults
     const options: any = {
       lat: searchLat,
-      lng: searchLng
+      lng: searchLng,
+      radius: 100000, // Default 10km
+      type: 'restaurant', // Default to restaurant
+      rating: 4.0, // Default 4 stars and up
+      minprice: 0, // Default min price
+      maxprice: 4  // Default max price
     };
 
+    // Override defaults if provided
     if (radius) {
       const parsedRadius = parseInt(radius as string);
       if (!isNaN(parsedRadius)) {

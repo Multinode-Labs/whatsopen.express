@@ -36,7 +36,7 @@ class PlacesService {
     const {
       lat,
       lng,
-      radius = 2000,
+      radius = 10000,
       type,
       keyword,
       minprice,
@@ -72,7 +72,7 @@ class PlacesService {
 
       // Make request to Google Places API
       const response = await fetch(url.toString());
-      
+
       if (!response.ok) {
         throw new Error(`Google Places API error: ${response.statusText}`);
       }
