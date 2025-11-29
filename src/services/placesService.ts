@@ -10,8 +10,17 @@ interface SearchOptions {
   rating?: number;
 }
 
+interface Photo {
+  photo_reference: string;
+  height: number;
+  width: number;
+  html_attributions?: string[];
+}
+
 interface GooglePlace {
   rating?: number;
+  photos?: Photo[];
+  photo_urls?: string[];
   [key: string]: any;
 }
 
@@ -24,6 +33,7 @@ interface GooglePlacesResponse {
 class PlacesService {
   private readonly apiKey: string;
   private readonly baseUrl = 'https://maps.googleapis.com/maps/api/place/nearbysearch/json';
+  private readonly photoBaseUrl = 'https://maps.googleapis.com/maps/api/place/photo';
 
   constructor() {
     this.apiKey = process.env.GMAPS_KEY || '';
@@ -86,8 +96,11 @@ class PlacesService {
         );
       }
 
+      // Enrich results with photo URLs
+      const enrichedResults = this.enrichWithPhotoUrls(data.results || []);
+
       return {
-        results: data.results || [],
+        results: enrichedResults,
         next_page_token: data.next_page_token,
         status: data.status
       };
@@ -97,6 +110,18 @@ class PlacesService {
       }
       throw new Error('Failed to fetch places: Unknown error');
     }
+  }
+
+  private enrichWithPhotoUrls(places: GooglePlace[]): GooglePlace[] {
+    return places.map(place => {
+      if (place.photos && place.photos.length > 0) {
+        // Generate photo URLs for all available photos
+        place.photo_urls = place.photos.map(photo => 
+          `${this.photoBaseUrl}?maxwidth=400&photo_reference=${photo.photo_reference}&key=${this.apiKey}`
+        );
+      }
+      return place;
+    });
   }
 }
 
