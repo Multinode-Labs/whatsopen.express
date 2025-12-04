@@ -17,10 +17,27 @@ interface Photo {
   html_attributions?: string[];
 }
 
+interface OpeningHours {
+  open_now?: boolean;
+  periods?: Array<{
+    close?: { day: number; time: string };
+    open?: { day: number; time: string };
+  }>;
+  weekday_text?: string[];
+}
+
+interface PlaceDetails {
+  opening_hours?: OpeningHours;
+  [key: string]: any;
+}
+
 interface GooglePlace {
   rating?: number;
   photos?: Photo[];
   photo_urls?: string[];
+  place_id?: string;
+  opening_hours?: OpeningHours;
+  closes_at?: string;
   [key: string]: any;
 }
 
@@ -33,6 +50,7 @@ interface GooglePlacesResponse {
 class PlacesService {
   private readonly apiKey: string;
   private readonly baseUrl = 'https://maps.googleapis.com/maps/api/place/nearbysearch/json';
+  private readonly detailsBaseUrl = 'https://maps.googleapis.com/maps/api/place/details/json';
   private readonly photoBaseUrl = 'https://maps.googleapis.com/maps/api/place/photo';
 
   constructor() {
@@ -96,8 +114,9 @@ class PlacesService {
         );
       }
 
-      // Enrich results with photo URLs
-      const enrichedResults = this.enrichWithPhotoUrls(data.results || []);
+      // Enrich results with photo URLs and closing times
+      let enrichedResults = this.enrichWithPhotoUrls(data.results || []);
+      enrichedResults = await this.enrichWithClosingTimes(enrichedResults);
 
       return {
         results: enrichedResults,
@@ -122,6 +141,68 @@ class PlacesService {
       }
       return place;
     });
+  }
+
+  private async enrichWithClosingTimes(places: GooglePlace[]): Promise<GooglePlace[]> {
+    // Fetch place details for all places in parallel
+    const detailsPromises = places.map(place => 
+      place.place_id ? this.getPlaceDetails(place.place_id) : Promise.resolve(null)
+    );
+
+    const detailsResults = await Promise.all(detailsPromises);
+
+    return places.map((place, index) => {
+      const details = detailsResults[index];
+      if (details?.opening_hours) {
+        place.opening_hours = details.opening_hours;
+        place.closes_at = this.extractClosingTime(details.opening_hours);
+      }
+      return place;
+    });
+  }
+
+  private async getPlaceDetails(placeId: string): Promise<PlaceDetails | null> {
+    try {
+      const url = new URL(this.detailsBaseUrl);
+      url.searchParams.append('place_id', placeId);
+      url.searchParams.append('fields', 'opening_hours');
+      url.searchParams.append('key', this.apiKey);
+
+      const response = await fetch(url.toString());
+      if (!response.ok) {
+        console.error(`Failed to fetch details for place ${placeId}`);
+        return null;
+      }
+
+      const data = await response.json();
+      return data.result || null;
+    } catch (error) {
+      console.error(`Error fetching place details for ${placeId}:`, error);
+      return null;
+    }
+  }
+
+  private extractClosingTime(openingHours: OpeningHours): string | undefined {
+    if (!openingHours.periods || openingHours.periods.length === 0) {
+      return undefined;
+    }
+
+    // Get current day of week (0 = Sunday, 6 = Saturday)
+    const now = new Date();
+    const currentDay = now.getDay();
+
+    // Find today's period
+    const todayPeriod = openingHours.periods.find(
+      period => period.open?.day === currentDay
+    );
+
+    if (todayPeriod?.close?.time) {
+      // Format time from HHMM to HH:MM
+      const time = todayPeriod.close.time;
+      return `${time.slice(0, 2)}:${time.slice(2)}`;
+    }
+
+    return undefined;
   }
 }
 
