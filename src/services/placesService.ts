@@ -174,7 +174,7 @@ class PlacesService {
         return null;
       }
 
-      const data = await response.json();
+      const data = await response.json() as { result?: PlaceDetails };
       return data.result || null;
     } catch (error) {
       console.error(`Error fetching place details for ${placeId}:`, error);
