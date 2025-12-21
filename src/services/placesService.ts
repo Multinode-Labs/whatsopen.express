@@ -33,6 +33,7 @@ interface PlaceDetails {
 
 interface GooglePlace {
   rating?: number;
+  price_level?: number;
   photos?: Photo[];
   photo_urls?: string[];
   place_id?: string;
@@ -88,12 +89,8 @@ class PlacesService {
       if (keyword) {
         url.searchParams.append('keyword', keyword);
       }
-      if (minprice !== undefined) {
-        url.searchParams.append('minprice', minprice.toString());
-      }
-      if (maxprice !== undefined) {
-        url.searchParams.append('maxprice', maxprice.toString());
-      }
+      // Note: Don't send minprice/maxprice to Google API to avoid filtering out places without price data
+      // We'll filter client-side instead
       if (pageToken) {
         url.searchParams.append('pagetoken', pageToken);
       }
@@ -112,6 +109,25 @@ class PlacesService {
         data.results = data.results.filter(
           place => place.rating !== undefined && place.rating >= rating
         );
+      }
+
+      // Filter by price level if provided (client-side to include places without price data)
+      if ((minprice !== undefined || maxprice !== undefined) && data.results) {
+        data.results = data.results.filter(place => {
+          // If place has no price_level, include it (better UX - don't hide places without data)
+          if (place.price_level === undefined || place.price_level === null) {
+            return true;
+          }
+          
+          // Apply price range filters
+          if (minprice !== undefined && place.price_level < minprice) {
+            return false;
+          }
+          if (maxprice !== undefined && place.price_level > maxprice) {
+            return false;
+          }
+          return true;
+        });
       }
 
       // Enrich results with photo URLs and closing times
