@@ -37,6 +37,7 @@ interface GooglePlace {
   photos?: Photo[];
   photo_urls?: string[];
   place_id?: string;
+  types?: string[];
   opening_hours?: OpeningHours;
   closes_at?: string;
   [key: string]: any;
@@ -103,6 +104,11 @@ class PlacesService {
       }
 
       const data = await response.json() as GooglePlacesResponse;
+
+      // Always filter out lodging (e.g., hotels, motels)
+      if (data.results) {
+        data.results = data.results.filter(place => !place.types?.includes('lodging'));
+      }
 
       // Filter by rating if provided
       if (rating !== undefined && data.results) {
