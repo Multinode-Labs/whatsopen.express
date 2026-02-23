@@ -76,6 +76,26 @@ class PlacesService {
     } = options;
 
     try {
+      // Default place types if no type filter provided
+      // These are common activities/services people want to find
+      const defaultTypes = [
+        'restaurant',
+        'cafe', 
+        'bar',
+        'pharmacy',
+        'night_club',
+        'movie_theater',
+        'shopping_mall',
+        'gym',
+        'park',
+        'museum',
+        'bowling_alley',
+        'amusement_park'
+      ];
+
+      // Determine which type(s) to search for
+      const searchType = type || defaultTypes.join('|');
+
       // Build URL with query parameters
       const url = new URL(this.baseUrl);
       url.searchParams.append('location', `${lat},${lng}`);
@@ -83,10 +103,8 @@ class PlacesService {
       url.searchParams.append('opennow', 'true');
       url.searchParams.append('key', this.apiKey);
 
-      // Add optional parameters only if provided
-      if (type) {
-        url.searchParams.append('type', type);
-      }
+      // Add type parameter (either user-provided or default)
+      url.searchParams.append('type', searchType);
       if (keyword) {
         url.searchParams.append('keyword', keyword);
       }
