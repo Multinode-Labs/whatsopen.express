@@ -26,11 +26,6 @@ interface OpeningHours {
   weekday_text?: string[];
 }
 
-interface PlaceDetails {
-  opening_hours?: OpeningHours;
-  [key: string]: any;
-}
-
 interface GooglePlace {
   rating?: number;
   price_level?: number;
@@ -49,11 +44,48 @@ interface GooglePlacesResponse {
   status: string;
 }
 
+// Places API (New) response types
+interface PlacesNewPhoto {
+  name: string;
+  widthPx: number;
+  heightPx: number;
+  authorAttributions?: Array<{ displayName: string; uri: string }>;
+}
+
+interface PlacesNewOpeningHours {
+  openNow?: boolean;
+  periods?: Array<{
+    open: { day: number; hour: number; minute: number };
+    close?: { day: number; hour: number; minute: number };
+  }>;
+  weekdayDescriptions?: string[];
+}
+
+interface PlacesNewPlace {
+  id: string;
+  displayName?: { text: string; languageCode: string };
+  formattedAddress?: string;
+  location?: { latitude: number; longitude: number };
+  rating?: number;
+  userRatingCount?: number;
+  priceLevel?: string;
+  types?: string[];
+  photos?: PlacesNewPhoto[];
+  regularOpeningHours?: PlacesNewOpeningHours;
+  currentOpeningHours?: PlacesNewOpeningHours;
+  primaryType?: string;
+  shortFormattedAddress?: string;
+  [key: string]: any;
+}
+
+interface PlacesNewResponse {
+  places?: PlacesNewPlace[];
+}
+
 class PlacesService {
   private readonly apiKey: string;
-  private readonly baseUrl = 'https://maps.googleapis.com/maps/api/place/nearbysearch/json';
-  private readonly detailsBaseUrl = 'https://maps.googleapis.com/maps/api/place/details/json';
-  private readonly photoBaseUrl = 'https://maps.googleapis.com/maps/api/place/photo';
+  private readonly baseUrl = 'https://places.googleapis.com/v1/places:searchNearby';
+  private readonly photoBaseUrl = 'https://places.googleapis.com/v1';
 
   constructor() {
     this.apiKey = process.env.GMAPS_KEY || '';
@@ -71,13 +103,11 @@ class PlacesService {
       keyword,
       minprice,
       maxprice,
-      pageToken,
       rating
     } = options;
 
     try {
       // Default place types if no type filter provided
-      // These are common activities/services people want to find
       const defaultTypes = [
         'restaurant',
         'cafe', 
@@ -93,57 +123,78 @@ class PlacesService {
         'amusement_park'
       ];
 
-      // Determine which type(s) to search for
-      const searchType = type || defaultTypes.join('|');
+      // Build request body for Places API (New)
+      const requestBody: any = {
+        locationRestriction: {
+          circle: {
+            center: { latitude: lat, longitude: lng },
+            radius: radius
+          }
+        },
+        maxResultCount: 20
+      };
 
-      // Build URL with query parameters
-      const url = new URL(this.baseUrl);
-      url.searchParams.append('location', `${lat},${lng}`);
-      url.searchParams.append('radius', radius.toString());
-      url.searchParams.append('opennow', 'true');
-      url.searchParams.append('key', this.apiKey);
-
-      // Add type parameter (either user-provided or default)
-      url.searchParams.append('type', searchType);
-      if (keyword) {
-        url.searchParams.append('keyword', keyword);
-      }
-      // Note: Don't send minprice/maxprice to Google API to avoid filtering out places without price data
-      // We'll filter client-side instead
-      if (pageToken) {
-        url.searchParams.append('pagetoken', pageToken);
+      // Add type filter - Places API (New) uses includedTypes array
+      if (type) {
+        requestBody.includedTypes = [type];
+      } else {
+        requestBody.includedTypes = defaultTypes;
       }
 
-      // Make request to Google Places API
-      const response = await fetch(url.toString());
+      // Exclude lodging from results
+      requestBody.excludedTypes = ['lodging'];
+
+      // Make request to Places API (New)
+      // Field mask determines what data we get and the pricing tier
+      const fieldMask = [
+        'places.id',
+        'places.displayName',
+        'places.formattedAddress',
+        'places.shortFormattedAddress',
+        'places.location',
+        'places.rating',
+        'places.userRatingCount',
+        'places.priceLevel',
+        'places.types',
+        'places.primaryType',
+        'places.photos',
+        'places.regularOpeningHours',
+        'places.currentOpeningHours'
+      ].join(',');
+
+      const response = await fetch(this.baseUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Goog-Api-Key': this.apiKey,
+          'X-Goog-FieldMask': fieldMask
+        },
+        body: JSON.stringify(requestBody)
+      });
 
       if (!response.ok) {
-        throw new Error(`Google Places API error: ${response.statusText}`);
+        const errorBody = await response.text();
+        throw new Error(`Google Places API error: ${response.statusText} - ${errorBody}`);
       }
 
-      const data = await response.json() as GooglePlacesResponse;
+      const data = await response.json() as PlacesNewResponse;
 
-      // Always filter out lodging (e.g., hotels, motels)
-      if (data.results) {
-        data.results = data.results.filter(place => !place.types?.includes('lodging'));
-      }
+      // Transform Places API (New) response to legacy format for mobile app compatibility
+      let results = this.transformToLegacyFormat(data.places || []);
 
       // Filter by rating if provided
-      if (rating !== undefined && data.results) {
-        data.results = data.results.filter(
+      if (rating !== undefined) {
+        results = results.filter(
           place => place.rating !== undefined && place.rating >= rating
         );
       }
 
-      // Filter by price level if provided (client-side to include places without price data)
-      if ((minprice !== undefined || maxprice !== undefined) && data.results) {
-        data.results = data.results.filter(place => {
-          // If place has no price_level, include it (better UX - don't hide places without data)
+      // Filter by price level if provided
+      if (minprice !== undefined || maxprice !== undefined) {
+        results = results.filter(place => {
           if (place.price_level === undefined || place.price_level === null) {
             return true;
           }
-          
-          // Apply price range filters
           if (minprice !== undefined && place.price_level < minprice) {
             return false;
           }
@@ -154,14 +205,19 @@ class PlacesService {
         });
       }
 
-      // Enrich results with photo URLs and closing times
-      let enrichedResults = this.enrichWithPhotoUrls(data.results || []);
-      enrichedResults = await this.enrichWithClosingTimes(enrichedResults);
+      // Filter by keyword if provided (search in name and types)
+      if (keyword) {
+        const lowerKeyword = keyword.toLowerCase();
+        results = results.filter(place => {
+          const nameMatch = place.name?.toLowerCase().includes(lowerKeyword);
+          const typeMatch = place.types?.some(t => t.toLowerCase().includes(lowerKeyword));
+          return nameMatch || typeMatch;
+        });
+      }
 
       return {
-        results: enrichedResults,
-        next_page_token: data.next_page_token,
-        status: data.status
+        results,
+        status: 'OK'
       };
     } catch (error) {
       if (error instanceof Error) {
@@ -171,75 +227,95 @@ class PlacesService {
     }
   }
 
-  private enrichWithPhotoUrls(places: GooglePlace[]): GooglePlace[] {
+  // Transform Places API (New) response to legacy format for backward compatibility
+  private transformToLegacyFormat(places: PlacesNewPlace[]): GooglePlace[] {
     return places.map(place => {
+      const legacyPlace: GooglePlace = {
+        place_id: place.id,
+        name: place.displayName?.text,
+        vicinity: place.shortFormattedAddress || place.formattedAddress,
+        formatted_address: place.formattedAddress,
+        geometry: place.location ? {
+          location: {
+            lat: place.location.latitude,
+            lng: place.location.longitude
+          }
+        } : undefined,
+        rating: place.rating,
+        user_ratings_total: place.userRatingCount,
+        price_level: this.convertPriceLevel(place.priceLevel),
+        types: place.types,
+        opening_hours: this.convertOpeningHours(place.regularOpeningHours || place.currentOpeningHours),
+        closes_at: this.extractClosingTimeFromNew(place.regularOpeningHours || place.currentOpeningHours)
+      };
+
+      // Convert photos to legacy format and generate URLs
       if (place.photos && place.photos.length > 0) {
-        // Generate photo URLs for all available photos
-        place.photo_urls = place.photos.map(photo => 
-          `${this.photoBaseUrl}?maxwidth=400&photo_reference=${photo.photo_reference}&key=${this.apiKey}`
+        legacyPlace.photos = place.photos.map(photo => ({
+          photo_reference: photo.name, // In new API, 'name' is the resource name
+          height: photo.heightPx,
+          width: photo.widthPx
+        }));
+        // Generate photo URLs using Places API (New) format
+        legacyPlace.photo_urls = place.photos.map(photo => 
+          `${this.photoBaseUrl}/${photo.name}/media?maxWidthPx=400&key=${this.apiKey}`
         );
       }
-      return place;
+
+      return legacyPlace;
     });
   }
 
-  private async enrichWithClosingTimes(places: GooglePlace[]): Promise<GooglePlace[]> {
-    // Fetch place details for all places in parallel
-    const detailsPromises = places.map(place => 
-      place.place_id ? this.getPlaceDetails(place.place_id) : Promise.resolve(null)
-    );
-
-    const detailsResults = await Promise.all(detailsPromises);
-
-    return places.map((place, index) => {
-      const details = detailsResults[index];
-      if (details?.opening_hours) {
-        place.opening_hours = details.opening_hours;
-        place.closes_at = this.extractClosingTime(details.opening_hours);
-      }
-      return place;
-    });
+  // Convert Places API (New) price level string to legacy numeric format
+  private convertPriceLevel(priceLevel?: string): number | undefined {
+    if (!priceLevel) return undefined;
+    const priceLevelMap: Record<string, number> = {
+      'PRICE_LEVEL_FREE': 0,
+      'PRICE_LEVEL_INEXPENSIVE': 1,
+      'PRICE_LEVEL_MODERATE': 2,
+      'PRICE_LEVEL_EXPENSIVE': 3,
+      'PRICE_LEVEL_VERY_EXPENSIVE': 4
+    };
+    return priceLevelMap[priceLevel];
   }
 
-  private async getPlaceDetails(placeId: string): Promise<PlaceDetails | null> {
-    try {
-      const url = new URL(this.detailsBaseUrl);
-      url.searchParams.append('place_id', placeId);
-      url.searchParams.append('fields', 'opening_hours');
-      url.searchParams.append('key', this.apiKey);
-
-      const response = await fetch(url.toString());
-      if (!response.ok) {
-        console.error(`Failed to fetch details for place ${placeId}`);
-        return null;
-      }
-
-      const data = await response.json() as { result?: PlaceDetails };
-      return data.result || null;
-    } catch (error) {
-      console.error(`Error fetching place details for ${placeId}:`, error);
-      return null;
-    }
+  // Convert Places API (New) opening hours to legacy format
+  private convertOpeningHours(newHours?: PlacesNewOpeningHours): OpeningHours | undefined {
+    if (!newHours) return undefined;
+    
+    return {
+      open_now: newHours.openNow,
+      periods: newHours.periods?.map(period => ({
+        open: {
+          day: period.open.day,
+          time: `${period.open.hour.toString().padStart(2, '0')}${period.open.minute.toString().padStart(2, '0')}`
+        },
+        close: period.close ? {
+          day: period.close.day,
+          time: `${period.close.hour.toString().padStart(2, '0')}${period.close.minute.toString().padStart(2, '0')}`
+        } : undefined
+      })),
+      weekday_text: newHours.weekdayDescriptions
+    };
   }
 
-  private extractClosingTime(openingHours: OpeningHours): string | undefined {
-    if (!openingHours.periods || openingHours.periods.length === 0) {
+  // Extract closing time from Places API (New) format
+  private extractClosingTimeFromNew(openingHours?: PlacesNewOpeningHours): string | undefined {
+    if (!openingHours?.periods || openingHours.periods.length === 0) {
       return undefined;
     }
 
-    // Get current day of week (0 = Sunday, 6 = Saturday)
     const now = new Date();
     const currentDay = now.getDay();
 
-    // Find today's period
     const todayPeriod = openingHours.periods.find(
-      period => period.open?.day === currentDay
+      period => period.open.day === currentDay
     );
 
-    if (todayPeriod?.close?.time) {
-      // Format time from HHMM to HH:MM
-      const time = todayPeriod.close.time;
-      return `${time.slice(0, 2)}:${time.slice(2)}`;
+    if (todayPeriod?.close) {
+      const hour = todayPeriod.close.hour.toString().padStart(2, '0');
+      const minute = todayPeriod.close.minute.toString().padStart(2, '0');
+      return `${hour}:${minute}`;
     }
 
     return undefined;
