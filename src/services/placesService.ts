@@ -80,12 +80,65 @@ interface PlacesNewPlace {
 
 interface PlacesNewResponse {
   places?: PlacesNewPlace[];
+  nextPageToken?: string;
 }
+
+// Map Flutter category names to Google Places types for Text Search
+const CATEGORY_TYPE_MAP: Record<string, string> = {
+  'food': 'restaurant',
+  'bars': 'bar',
+  'groceries': 'supermarket',
+  'pharmacy': 'pharmacy',
+  'fuel': 'gas_station',
+};
+
+// All price level strings in order (index = numeric level)
+const PRICE_LEVEL_STRINGS = [
+  'PRICE_LEVEL_FREE',
+  'PRICE_LEVEL_INEXPENSIVE',
+  'PRICE_LEVEL_MODERATE',
+  'PRICE_LEVEL_EXPENSIVE',
+  'PRICE_LEVEL_VERY_EXPENSIVE',
+] as const;
 
 class PlacesService {
   private readonly apiKey: string;
-  private readonly baseUrl = 'https://places.googleapis.com/v1/places:searchNearby';
+  private readonly nearbyUrl = 'https://places.googleapis.com/v1/places:searchNearby';
+  private readonly textSearchUrl = 'https://places.googleapis.com/v1/places:searchText';
   private readonly photoBaseUrl = 'https://places.googleapis.com/v1';
+
+  private readonly fieldMask = [
+    'places.id',
+    'places.displayName',
+    'places.formattedAddress',
+    'places.shortFormattedAddress',
+    'places.location',
+    'places.rating',
+    'places.userRatingCount',
+    'places.priceLevel',
+    'places.types',
+    'places.primaryType',
+    'places.photos',
+    'places.regularOpeningHours',
+    'places.currentOpeningHours',
+  ].join(',');
+
+  private readonly textSearchFieldMask = [
+    'places.id',
+    'places.displayName',
+    'places.formattedAddress',
+    'places.shortFormattedAddress',
+    'places.location',
+    'places.rating',
+    'places.userRatingCount',
+    'places.priceLevel',
+    'places.types',
+    'places.primaryType',
+    'places.photos',
+    'places.regularOpeningHours',
+    'places.currentOpeningHours',
+    'nextPageToken',
+  ].join(',');
 
   constructor() {
     this.apiKey = process.env.GMAPS_KEY || '';
@@ -94,23 +147,29 @@ class PlacesService {
     }
   }
 
-  async searchNearby(options: SearchOptions): Promise<GooglePlacesResponse> {
-    const {
-      lat,
-      lng,
-      radius = 10000,
-      type,
-      keyword,
-      minprice,
-      maxprice,
-      rating
-    } = options;
+  // Public entry point — decides which Google API endpoint to use
+  async searchPlaces(options: SearchOptions): Promise<GooglePlacesResponse> {
+    const { keyword, pageToken } = options;
+
+    // Use Text Search when there's a keyword/category or pagination token
+    if (keyword || pageToken) {
+      return this.searchText(options);
+    }
+
+    // Default browse — use Nearby Search
+    return this.searchNearby(options);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Nearby Search (New) — used for default browse (no keyword)
+  // ---------------------------------------------------------------------------
+  private async searchNearby(options: SearchOptions): Promise<GooglePlacesResponse> {
+    const { lat, lng, radius = 10000, type, rating, minprice, maxprice } = options;
 
     try {
-      // Default place types if no type filter provided
       const defaultTypes = [
         'restaurant',
-        'cafe', 
+        'cafe',
         'bar',
         'pharmacy',
         'night_club',
@@ -120,56 +179,35 @@ class PlacesService {
         'park',
         'museum',
         'bowling_alley',
-        'amusement_park'
+        'amusement_park',
       ];
 
-      // Build request body for Places API (New)
       const requestBody: any = {
         locationRestriction: {
           circle: {
             center: { latitude: lat, longitude: lng },
-            radius: radius
-          }
+            radius: radius,
+          },
         },
-        maxResultCount: 20
+        maxResultCount: 20,
       };
 
-      // Add type filter - Places API (New) uses includedTypes array
       if (type) {
         requestBody.includedTypes = [type];
       } else {
         requestBody.includedTypes = defaultTypes;
       }
 
-      // Exclude lodging from results
       requestBody.excludedTypes = ['lodging'];
 
-      // Make request to Places API (New)
-      // Field mask determines what data we get and the pricing tier
-      const fieldMask = [
-        'places.id',
-        'places.displayName',
-        'places.formattedAddress',
-        'places.shortFormattedAddress',
-        'places.location',
-        'places.rating',
-        'places.userRatingCount',
-        'places.priceLevel',
-        'places.types',
-        'places.primaryType',
-        'places.photos',
-        'places.regularOpeningHours',
-        'places.currentOpeningHours'
-      ].join(',');
-
-      const response = await fetch(this.baseUrl, {
+      const response = await fetch(this.nearbyUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'X-Goog-Api-Key': this.apiKey,
-          'X-Goog-FieldMask': fieldMask
+          'X-Goog-FieldMask': this.fieldMask,
         },
-        body: JSON.stringify(requestBody)
+        body: JSON.stringify(requestBody),
       });
 
       if (!response.ok) {
@@ -177,47 +215,123 @@ class PlacesService {
         throw new Error(`Google Places API error: ${response.statusText} - ${errorBody}`);
       }
 
-      const data = await response.json() as PlacesNewResponse;
-
-      // Transform Places API (New) response to legacy format for mobile app compatibility
+      const data = (await response.json()) as PlacesNewResponse;
       let results = this.transformToLegacyFormat(data.places || []);
 
-      // Filter by rating if provided
+      // Client-side openNow filter (Nearby Search doesn't support it natively)
+      results = results.filter(place => {
+        // Keep places with no opening hours data (parks, public spaces, etc.)
+        if (!place.opening_hours) return true;
+        return place.opening_hours.open_now === true;
+      });
+
+      // Client-side rating filter
       if (rating !== undefined) {
         results = results.filter(
-          place => place.rating !== undefined && place.rating >= rating
+          place => place.rating !== undefined && place.rating >= rating,
         );
       }
 
-      // Filter by price level if provided
+      // Client-side price level filter
       if (minprice !== undefined || maxprice !== undefined) {
         results = results.filter(place => {
-          if (place.price_level === undefined || place.price_level === null) {
-            return true;
-          }
-          if (minprice !== undefined && place.price_level < minprice) {
-            return false;
-          }
-          if (maxprice !== undefined && place.price_level > maxprice) {
-            return false;
-          }
+          if (place.price_level === undefined || place.price_level === null) return true;
+          if (minprice !== undefined && place.price_level < minprice) return false;
+          if (maxprice !== undefined && place.price_level > maxprice) return false;
           return true;
         });
       }
 
-      // Filter by keyword if provided (search in name and types)
-      if (keyword) {
-        const lowerKeyword = keyword.toLowerCase();
-        results = results.filter(place => {
-          const nameMatch = place.name?.toLowerCase().includes(lowerKeyword);
-          const typeMatch = place.types?.some(t => t.toLowerCase().includes(lowerKeyword));
-          return nameMatch || typeMatch;
-        });
+      // No pagination for Nearby Search
+      return { results, status: 'OK' };
+    } catch (error) {
+      if (error instanceof Error) {
+        throw new Error(`Failed to fetch places: ${error.message}`);
       }
+      throw new Error('Failed to fetch places: Unknown error');
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Text Search (New) — used for keyword / category searches + pagination
+  // ---------------------------------------------------------------------------
+  private async searchText(options: SearchOptions): Promise<GooglePlacesResponse> {
+    const {
+      lat,
+      lng,
+      radius = 10000,
+      keyword,
+      rating,
+      minprice,
+      maxprice,
+      pageToken,
+    } = options;
+
+    try {
+      const requestBody: any = {
+        openNow: true,
+        pageSize: 20,
+      };
+
+      // Text query — use keyword directly; Google NLU handles "Food", "Bars", etc.
+      if (keyword) {
+        requestBody.textQuery = keyword;
+
+        // If the keyword matches a known category, also set includedType for precision
+        const mappedType = CATEGORY_TYPE_MAP[keyword.toLowerCase()];
+        if (mappedType) {
+          requestBody.includedType = mappedType;
+        }
+      } else if (pageToken) {
+        // Pagination requires repeating the original textQuery — use a broad default
+        requestBody.textQuery = 'places';
+      }
+
+      // Location bias (soft preference for nearby results)
+      requestBody.locationBias = {
+        circle: {
+          center: { latitude: lat, longitude: lng },
+          radius: radius,
+        },
+      };
+
+      // Min rating (server-side)
+      if (rating !== undefined) {
+        requestBody.minRating = rating;
+      }
+
+      // Price levels (server-side)
+      if (minprice !== undefined || maxprice !== undefined) {
+        requestBody.priceLevels = this.buildPriceLevels(minprice ?? 0, maxprice ?? 4);
+      }
+
+      // Pagination token
+      if (pageToken) {
+        requestBody.pageToken = pageToken;
+      }
+
+      const response = await fetch(this.textSearchUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Goog-Api-Key': this.apiKey,
+          'X-Goog-FieldMask': this.textSearchFieldMask,
+        },
+        body: JSON.stringify(requestBody),
+      });
+
+      if (!response.ok) {
+        const errorBody = await response.text();
+        throw new Error(`Google Places API error: ${response.statusText} - ${errorBody}`);
+      }
+
+      const data = (await response.json()) as PlacesNewResponse;
+      const results = this.transformToLegacyFormat(data.places || []);
 
       return {
         results,
-        status: 'OK'
+        next_page_token: data.nextPageToken,
+        status: 'OK',
       };
     } catch (error) {
       if (error instanceof Error) {
@@ -227,38 +341,56 @@ class PlacesService {
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // Helpers
+  // ---------------------------------------------------------------------------
+
+  // Build array of PRICE_LEVEL_* strings for a numeric min–max range (0–4)
+  private buildPriceLevels(min: number, max: number): string[] {
+    const levels: string[] = [];
+    for (let i = min; i <= max && i < PRICE_LEVEL_STRINGS.length; i++) {
+      levels.push(PRICE_LEVEL_STRINGS[i]);
+    }
+    return levels;
+  }
+
   // Transform Places API (New) response to legacy format for backward compatibility
   private transformToLegacyFormat(places: PlacesNewPlace[]): GooglePlace[] {
     return places.map(place => {
+      // Prefer currentOpeningHours for real-time open/closed status
+      const openingHours = place.currentOpeningHours || place.regularOpeningHours;
+
       const legacyPlace: GooglePlace = {
         place_id: place.id,
         name: place.displayName?.text,
         vicinity: place.shortFormattedAddress || place.formattedAddress,
         formatted_address: place.formattedAddress,
-        geometry: place.location ? {
-          location: {
-            lat: place.location.latitude,
-            lng: place.location.longitude
-          }
-        } : undefined,
+        geometry: place.location
+          ? {
+              location: {
+                lat: place.location.latitude,
+                lng: place.location.longitude,
+              },
+            }
+          : undefined,
         rating: place.rating,
         user_ratings_total: place.userRatingCount,
         price_level: this.convertPriceLevel(place.priceLevel),
         types: place.types,
-        opening_hours: this.convertOpeningHours(place.regularOpeningHours || place.currentOpeningHours),
-        closes_at: this.extractClosingTimeFromNew(place.regularOpeningHours || place.currentOpeningHours)
+        opening_hours: this.convertOpeningHours(openingHours),
+        closes_at: this.extractClosingTimeFromNew(openingHours),
       };
 
       // Convert photos to legacy format and generate URLs
       if (place.photos && place.photos.length > 0) {
         legacyPlace.photos = place.photos.map(photo => ({
-          photo_reference: photo.name, // In new API, 'name' is the resource name
+          photo_reference: photo.name,
           height: photo.heightPx,
-          width: photo.widthPx
+          width: photo.widthPx,
         }));
-        // Generate photo URLs using Places API (New) format
-        legacyPlace.photo_urls = place.photos.map(photo => 
-          `${this.photoBaseUrl}/${photo.name}/media?maxWidthPx=400&key=${this.apiKey}`
+        legacyPlace.photo_urls = place.photos.map(
+          photo =>
+            `${this.photoBaseUrl}/${photo.name}/media?maxWidthPx=400&key=${this.apiKey}`,
         );
       }
 
@@ -270,11 +402,11 @@ class PlacesService {
   private convertPriceLevel(priceLevel?: string): number | undefined {
     if (!priceLevel) return undefined;
     const priceLevelMap: Record<string, number> = {
-      'PRICE_LEVEL_FREE': 0,
-      'PRICE_LEVEL_INEXPENSIVE': 1,
-      'PRICE_LEVEL_MODERATE': 2,
-      'PRICE_LEVEL_EXPENSIVE': 3,
-      'PRICE_LEVEL_VERY_EXPENSIVE': 4
+      PRICE_LEVEL_FREE: 0,
+      PRICE_LEVEL_INEXPENSIVE: 1,
+      PRICE_LEVEL_MODERATE: 2,
+      PRICE_LEVEL_EXPENSIVE: 3,
+      PRICE_LEVEL_VERY_EXPENSIVE: 4,
     };
     return priceLevelMap[priceLevel];
   }
@@ -282,20 +414,22 @@ class PlacesService {
   // Convert Places API (New) opening hours to legacy format
   private convertOpeningHours(newHours?: PlacesNewOpeningHours): OpeningHours | undefined {
     if (!newHours) return undefined;
-    
+
     return {
       open_now: newHours.openNow,
       periods: newHours.periods?.map(period => ({
         open: {
           day: period.open.day,
-          time: `${period.open.hour.toString().padStart(2, '0')}${period.open.minute.toString().padStart(2, '0')}`
+          time: `${period.open.hour.toString().padStart(2, '0')}${period.open.minute.toString().padStart(2, '0')}`,
         },
-        close: period.close ? {
-          day: period.close.day,
-          time: `${period.close.hour.toString().padStart(2, '0')}${period.close.minute.toString().padStart(2, '0')}`
-        } : undefined
+        close: period.close
+          ? {
+              day: period.close.day,
+              time: `${period.close.hour.toString().padStart(2, '0')}${period.close.minute.toString().padStart(2, '0')}`,
+            }
+          : undefined,
       })),
-      weekday_text: newHours.weekdayDescriptions
+      weekday_text: newHours.weekdayDescriptions,
     };
   }
 
@@ -309,7 +443,7 @@ class PlacesService {
     const currentDay = now.getDay();
 
     const todayPeriod = openingHours.periods.find(
-      period => period.open.day === currentDay
+      period => period.open.day === currentDay,
     );
 
     if (todayPeriod?.close) {

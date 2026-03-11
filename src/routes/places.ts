@@ -75,15 +75,17 @@ router.get('/places', async (req: Request, res: Response) => {
 
     if (minprice) {
       const parsedMinPrice = parseInt(minprice as string);
-      if (!isNaN(parsedMinPrice) && parsedMinPrice >= 0 && parsedMinPrice <= 4) {
-        options.minprice = parsedMinPrice;
+      if (!isNaN(parsedMinPrice) && parsedMinPrice >= 0 && parsedMinPrice <= 5) {
+        // Convert Flutter's 1-5 scale to Google's 0-4 scale
+        options.minprice = Math.max(parsedMinPrice - 1, 0);
       }
     }
 
     if (maxprice) {
       const parsedMaxPrice = parseInt(maxprice as string);
-      if (!isNaN(parsedMaxPrice) && parsedMaxPrice >= 0 && parsedMaxPrice <= 4) {
-        options.maxprice = parsedMaxPrice;
+      if (!isNaN(parsedMaxPrice) && parsedMaxPrice >= 0 && parsedMaxPrice <= 5) {
+        // Convert Flutter's 1-5 scale to Google's 0-4 scale
+        options.maxprice = Math.min(parsedMaxPrice - 1, 4);
       }
     }
 
@@ -92,7 +94,7 @@ router.get('/places', async (req: Request, res: Response) => {
     }
 
     // Call service
-    const data = await placesService.searchNearby(options);
+    const data = await placesService.searchPlaces(options);
 
     // Return response
     res.json({
