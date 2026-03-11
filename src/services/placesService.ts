@@ -346,9 +346,11 @@ class PlacesService {
   // ---------------------------------------------------------------------------
 
   // Build array of PRICE_LEVEL_* strings for a numeric min–max range (0–4)
+  // Note: Google Text Search does not support PRICE_LEVEL_FREE, so we start from 1
   private buildPriceLevels(min: number, max: number): string[] {
     const levels: string[] = [];
-    for (let i = min; i <= max && i < PRICE_LEVEL_STRINGS.length; i++) {
+    const effectiveMin = Math.max(min, 1); // Skip PRICE_LEVEL_FREE
+    for (let i = effectiveMin; i <= max && i < PRICE_LEVEL_STRINGS.length; i++) {
       levels.push(PRICE_LEVEL_STRINGS[i]);
     }
     return levels;
