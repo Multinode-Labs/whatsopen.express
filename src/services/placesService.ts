@@ -83,15 +83,6 @@ interface PlacesNewResponse {
   nextPageToken?: string;
 }
 
-// Map Flutter category names to Google Places types for Text Search
-const CATEGORY_TYPE_MAP: Record<string, string> = {
-  'food': 'restaurant',
-  'bars': 'bar',
-  'groceries': 'supermarket',
-  'pharmacy': 'pharmacy',
-  'fuel': 'gas_station',
-};
-
 // All price level strings in order (index = numeric level)
 const PRICE_LEVEL_STRINGS = [
   'PRICE_LEVEL_FREE',
@@ -276,24 +267,14 @@ class PlacesService {
       // Text query — use keyword directly; Google NLU handles "Food", "Bars", etc.
       if (keyword) {
         requestBody.textQuery = keyword;
-
-        // If the keyword matches a known category, also set includedType for precision
-        const mappedType = CATEGORY_TYPE_MAP[keyword.toLowerCase()];
-        if (mappedType) {
-          requestBody.includedType = mappedType;
-        }
       } else if (pageToken) {
         // Pagination requires repeating the original textQuery — use a broad default
         requestBody.textQuery = 'places';
       }
 
-      // Location bias (soft preference for nearby results)
-      requestBody.locationBias = {
-        circle: {
-          center: { latitude: lat, longitude: lng },
-          radius: radius,
-        },
-      };
+      // Hard location restriction (rectangle) to only return nearby results,
+      // matching the old Nearby Search behaviour that used a strict radius.
+      requestBody.locationRestriction = this.circleToRect(lat, lng, radius);
 
       // Min rating (server-side)
       if (rating !== undefined) {
@@ -354,6 +335,23 @@ class PlacesService {
       levels.push(PRICE_LEVEL_STRINGS[i]);
     }
     return levels;
+  }
+
+  // Convert a circle (centre + radius in metres) to a rectangular viewport
+  // for use with Text Search's locationRestriction (which only accepts rectangles).
+  private circleToRect(lat: number, lng: number, radiusMeters: number) {
+    const earthRadius = 6_371_000; // metres
+    const latDelta = (radiusMeters / earthRadius) * (180 / Math.PI);
+    const lngDelta =
+      (radiusMeters / earthRadius) * (180 / Math.PI) /
+      Math.cos(lat * (Math.PI / 180));
+
+    return {
+      rectangle: {
+        low: { latitude: lat - latDelta, longitude: lng - lngDelta },
+        high: { latitude: lat + latDelta, longitude: lng + lngDelta },
+      },
+    };
   }
 
   // Transform Places API (New) response to legacy format for backward compatibility

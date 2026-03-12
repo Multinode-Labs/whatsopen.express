@@ -44,13 +44,18 @@ router.get('/places', async (req: Request, res: Response) => {
       });
     }
 
-    // Parse optional parameters - no defaults
+    // Parse optional parameters with defaults
     const options: any = {
       lat: searchLat,
-      lng: searchLng
+      lng: searchLng,
+      radius: 100000, // Default 100km
+      type: 'restaurant', // Default to restaurant
+      rating: 4.0, // Default 4 stars and up
+      minprice: 0, // Default min price
+      maxprice: 4  // Default max price
     };
 
-    // Add optional parameters if provided
+    // Override defaults if provided
     if (radius) {
       const parsedRadius = parseInt(radius as string);
       if (!isNaN(parsedRadius)) {
@@ -64,6 +69,11 @@ router.get('/places', async (req: Request, res: Response) => {
 
     if (keyword) {
       options.keyword = keyword as string;
+      // Clear type default when searching by keyword —
+      // the keyword IS the search intent (e.g. "Pharmacy", "Fuel")
+      if (!type) {
+        delete options.type;
+      }
     }
 
     if (rating) {
@@ -75,17 +85,15 @@ router.get('/places', async (req: Request, res: Response) => {
 
     if (minprice) {
       const parsedMinPrice = parseInt(minprice as string);
-      if (!isNaN(parsedMinPrice) && parsedMinPrice >= 0 && parsedMinPrice <= 5) {
-        // Convert Flutter's 1-5 scale to Google's 0-4 scale
-        options.minprice = Math.max(parsedMinPrice - 1, 0);
+      if (!isNaN(parsedMinPrice) && parsedMinPrice >= 0 && parsedMinPrice <= 4) {
+        options.minprice = parsedMinPrice;
       }
     }
 
     if (maxprice) {
       const parsedMaxPrice = parseInt(maxprice as string);
-      if (!isNaN(parsedMaxPrice) && parsedMaxPrice >= 0 && parsedMaxPrice <= 5) {
-        // Convert Flutter's 1-5 scale to Google's 0-4 scale
-        options.maxprice = Math.min(parsedMaxPrice - 1, 4);
+      if (!isNaN(parsedMaxPrice) && parsedMaxPrice >= 0 && parsedMaxPrice <= 4) {
+        options.maxprice = parsedMaxPrice;
       }
     }
 
