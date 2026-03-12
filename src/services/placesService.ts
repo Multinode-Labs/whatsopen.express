@@ -181,6 +181,7 @@ class PlacesService {
           },
         },
         maxResultCount: 20,
+        rankPreference: 'DISTANCE',
       };
 
       if (type) {
@@ -233,6 +234,9 @@ class PlacesService {
         });
       }
 
+      // Sort by distance from user (nearest first)
+      results = this.sortByDistance(results, lat, lng);
+
       // No pagination for Nearby Search
       return { results, status: 'OK' };
     } catch (error) {
@@ -276,15 +280,10 @@ class PlacesService {
       // matching the old Nearby Search behaviour that used a strict radius.
       requestBody.locationRestriction = this.circleToRect(lat, lng, radius);
 
-      // Min rating (server-side)
-      if (rating !== undefined) {
-        requestBody.minRating = rating;
-      }
-
-      // Price levels (server-side)
-      if (minprice !== undefined || maxprice !== undefined) {
-        requestBody.priceLevels = this.buildPriceLevels(minprice ?? 0, maxprice ?? 4);
-      }
+      // NOTE: priceLevels and minRating are intentionally NOT sent to the API.
+      // The new Text Search priceLevels acts as a whitelist, which excludes
+      // places that have no price data at all (gas stations, pharmacies, etc.).
+      // Instead we filter client-side so places without price data are kept.
 
       // Pagination token
       if (pageToken) {
@@ -307,7 +306,27 @@ class PlacesService {
       }
 
       const data = (await response.json()) as PlacesNewResponse;
-      const results = this.transformToLegacyFormat(data.places || []);
+      let results = this.transformToLegacyFormat(data.places || []);
+
+      // Client-side rating filter (keeps places without ratings)
+      if (rating !== undefined) {
+        results = results.filter(
+          place => place.rating !== undefined && place.rating >= rating,
+        );
+      }
+
+      // Client-side price filter (keeps places without price data)
+      if (minprice !== undefined || maxprice !== undefined) {
+        results = results.filter(place => {
+          if (place.price_level === undefined || place.price_level === null) return true;
+          if (minprice !== undefined && place.price_level < minprice) return false;
+          if (maxprice !== undefined && place.price_level > maxprice) return false;
+          return true;
+        });
+      }
+
+      // Sort by distance from user (nearest first)
+      results = this.sortByDistance(results, lat, lng);
 
       return {
         results,
@@ -335,6 +354,28 @@ class PlacesService {
       levels.push(PRICE_LEVEL_STRINGS[i]);
     }
     return levels;
+  }
+
+  // Sort results by distance from a reference point (nearest first).
+  private sortByDistance(results: GooglePlace[], lat: number, lng: number): GooglePlace[] {
+    return results.sort((a, b) => {
+      const distA = this.haversine(lat, lng, a.geometry?.location?.lat, a.geometry?.location?.lng);
+      const distB = this.haversine(lat, lng, b.geometry?.location?.lat, b.geometry?.location?.lng);
+      return distA - distB;
+    });
+  }
+
+  // Haversine distance in metres between two lat/lng pairs.
+  private haversine(lat1: number, lng1: number, lat2?: number, lng2?: number): number {
+    if (lat2 === undefined || lng2 === undefined) return Infinity;
+    const R = 6_371_000;
+    const toRad = (deg: number) => deg * (Math.PI / 180);
+    const dLat = toRad(lat2 - lat1);
+    const dLng = toRad(lng2 - lng1);
+    const a =
+      Math.sin(dLat / 2) ** 2 +
+      Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   }
 
   // Convert a circle (centre + radius in metres) to a rectangular viewport
